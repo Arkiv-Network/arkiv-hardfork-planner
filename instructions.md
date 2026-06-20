@@ -38,7 +38,7 @@ ARKIV_PROTOCOL_SCHEDULE_URL=http://protocol-schedule:28882/arkiv-protocol-schedu
 
 ## Docker Compose Example
 
-Use `docker-compose.atlas.yml` as the Atlas drop-in shape:
+Use `docker-compose.yml` as the Atlas drop-in shape:
 
 ```yaml
 services:
