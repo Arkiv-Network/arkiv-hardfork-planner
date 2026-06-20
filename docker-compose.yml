@@ -8,6 +8,7 @@ services:
     environment:
       LISTEN_HOST: "0.0.0.0"
       LISTEN_PORT: "28882"
+      HTML_TITLE: ${HTML_TITLE:-Arkiv Hardfork Planner}
       SCHEDULE_PATH: /data/arkiv-protocol-schedule.json
       CHAIN_ID: "42069"
       # Uncomment to observe the chain head and gate future entries by currentBlock:

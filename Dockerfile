@@ -17,6 +17,7 @@ COPY arkiv-protocol-schedule.json /etc/arkiv/arkiv-protocol-schedule.json
 
 ENV LISTEN_HOST=0.0.0.0 \
     LISTEN_PORT=28882 \
+    HTML_TITLE="Arkiv Hardfork Planner" \
     SCHEDULE_PATH=/etc/arkiv/arkiv-protocol-schedule.json
 
 EXPOSE 28882

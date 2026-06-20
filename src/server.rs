@@ -18,6 +18,7 @@ use crate::store::{AddForkFailure, RemoveForkFailure, ScheduleStore, Snapshot};
 pub struct AppState {
     pub store: Arc<ScheduleStore>,
     pub schedule_path: Arc<String>,
+    pub html_title: Arc<String>,
     pub admin_key: Option<Arc<String>>,
 }
 
@@ -62,11 +63,13 @@ pub async fn run_server(state: AppState, listen_host: String, listen_port: u16) 
     }
 }
 
-async fn index_handler() -> Response {
+async fn index_handler(State(state): State<AppState>) -> Response {
+    let html = render_index_html(state.html_title.as_str());
+
     (
         StatusCode::OK,
         [("content-type", "text/html; charset=utf-8")],
-        INDEX_HTML,
+        html,
     )
         .into_response()
 }
@@ -251,6 +254,25 @@ fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
     diff == 0
 }
 
+fn render_index_html(title: &str) -> String {
+    INDEX_HTML.replace("__HTML_TITLE__", &escape_html(title))
+}
+
+fn escape_html(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for character in value.chars() {
+        match character {
+            '&' => escaped.push_str("&amp;"),
+            '<' => escaped.push_str("&lt;"),
+            '>' => escaped.push_str("&gt;"),
+            '"' => escaped.push_str("&quot;"),
+            '\'' => escaped.push_str("&#39;"),
+            _ => escaped.push(character),
+        }
+    }
+    escaped
+}
+
 fn persist_schedule(state: &AppState, canonical: &str) -> Result<(), String> {
     let path = state.schedule_path.as_str();
 
@@ -335,6 +357,7 @@ mod tests {
         AppState {
             store: Arc::new(ScheduleStore::new(sample_document(), None).expect("valid document")),
             schedule_path: Arc::new("/tmp/unused-arkiv-schedule.json".to_string()),
+            html_title: Arc::new("Arkiv Hardfork Planner".to_string()),
             admin_key: key.map(|k| Arc::new(k.to_string())),
         }
     }
@@ -366,13 +389,26 @@ mod tests {
 
     #[tokio::test]
     async fn index_handler_serves_html() {
-        let (status, headers, body) = body_string(index_handler().await).await;
+        let state = state_with_key(None);
+        let (status, headers, body) = body_string(index_handler(State(state)).await).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(
             headers.get("content-type").unwrap(),
             "text/html; charset=utf-8"
         );
         assert!(body.contains("Arkiv Hardfork Planner"));
+    }
+
+    #[tokio::test]
+    async fn index_handler_escapes_configured_title() {
+        let mut state = state_with_key(None);
+        state.html_title = Arc::new("Fork <Planner> & \"Admin\"".to_string());
+
+        let (_, _, body) = body_string(index_handler(State(state)).await).await;
+
+        assert!(body.contains("<title>Fork &lt;Planner&gt; &amp; &quot;Admin&quot;</title>"));
+        assert!(body.contains("<h1>Fork &lt;Planner&gt; &amp; &quot;Admin&quot;</h1>"));
+        assert!(!body.contains("<title>Fork <Planner>"));
     }
 
     #[tokio::test]
@@ -422,6 +458,7 @@ mod tests {
         let state = AppState {
             store: Arc::new(ScheduleStore::new(document, None).expect("valid")),
             schedule_path: Arc::new(temp.to_string_lossy().to_string()),
+            html_title: Arc::new("Arkiv Hardfork Planner".to_string()),
             admin_key: Some(Arc::new("real-key".to_string())),
         };
         let mut headers = HeaderMap::new();

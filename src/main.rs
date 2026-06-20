@@ -139,6 +139,7 @@ fn main() {
         let app_state = server::AppState {
             store,
             schedule_path: Arc::new(config.schedule_path.clone()),
+            html_title: Arc::new(config.html_title.clone()),
             admin_key: admin_key.map(Arc::new),
         };
 

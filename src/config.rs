@@ -6,6 +6,7 @@ const DEFAULT_LISTEN_HOST: &str = "0.0.0.0";
 const DEFAULT_LISTEN_PORT: NonZeroU16 = NonZeroU16::new(28882).unwrap();
 const DEFAULT_WEB_WORKERS: NonZeroUsize = NonZeroUsize::new(4).unwrap();
 const DEFAULT_SCHEDULE_PATH: &str = "arkiv-protocol-schedule.json";
+const DEFAULT_HTML_TITLE: &str = "Arkiv Hardfork Planner";
 const DEFAULT_RPC_POLL_SECONDS: NonZeroU64 = NonZeroU64::new(10).unwrap();
 const DEFAULT_RPC_TIMEOUT_MS: NonZeroU64 = NonZeroU64::new(5000).unwrap();
 
@@ -19,6 +20,8 @@ pub struct Config {
     pub web_workers: NonZeroUsize,
     #[serde(default = "default_schedule_path")]
     pub schedule_path: String,
+    #[serde(default = "default_html_title")]
+    pub html_title: String,
     #[serde(default)]
     pub chain_id: Option<u64>,
     #[serde(default)]
@@ -51,6 +54,10 @@ fn default_schedule_path() -> String {
     DEFAULT_SCHEDULE_PATH.to_string()
 }
 
+fn default_html_title() -> String {
+    DEFAULT_HTML_TITLE.to_string()
+}
+
 fn default_rpc_poll_seconds() -> NonZeroU64 {
     DEFAULT_RPC_POLL_SECONDS
 }
@@ -78,6 +85,7 @@ mod tests {
         assert_eq!(config.listen_port, DEFAULT_LISTEN_PORT);
         assert_eq!(config.web_workers, DEFAULT_WEB_WORKERS);
         assert_eq!(config.schedule_path, DEFAULT_SCHEDULE_PATH);
+        assert_eq!(config.html_title, DEFAULT_HTML_TITLE);
         assert_eq!(config.chain_id, None);
         assert_eq!(config.rpc_url, None);
         assert_eq!(config.rpc_poll_seconds, DEFAULT_RPC_POLL_SECONDS);
@@ -89,6 +97,7 @@ mod tests {
     fn parses_valid_overrides() {
         let config = from_pairs([
             ("SCHEDULE_PATH", "/etc/arkiv/schedule.json"),
+            ("HTML_TITLE", "Arkiv Fork Planner"),
             ("CHAIN_ID", "42069"),
             ("RPC_URL", "http://localhost:8545"),
             ("RPC_POLL_SECONDS", "5"),
@@ -96,6 +105,7 @@ mod tests {
         ])
         .unwrap();
         assert_eq!(config.schedule_path, "/etc/arkiv/schedule.json");
+        assert_eq!(config.html_title, "Arkiv Fork Planner");
         assert_eq!(config.chain_id, Some(42069));
         assert_eq!(config.rpc_url.as_deref(), Some("http://localhost:8545"));
         assert_eq!(config.rpc_poll_seconds.get(), 5);
