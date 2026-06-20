@@ -9,6 +9,14 @@ const DEFAULT_SCHEDULE_PATH: &str = "arkiv-protocol-schedule.json";
 const DEFAULT_HTML_TITLE: &str = "Arkiv Hardfork Planner";
 const DEFAULT_RPC_POLL_SECONDS: NonZeroU64 = NonZeroU64::new(10).unwrap();
 const DEFAULT_RPC_TIMEOUT_MS: NonZeroU64 = NonZeroU64::new(5000).unwrap();
+const DEFAULT_RPC_STARTUP_MODE: RpcStartupMode = RpcStartupMode::Strict;
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum RpcStartupMode {
+    Strict,
+    Deferred,
+}
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct Config {
@@ -26,6 +34,8 @@ pub struct Config {
     pub chain_id: Option<u64>,
     #[serde(default)]
     pub rpc_url: Option<String>,
+    #[serde(default = "default_rpc_startup_mode")]
+    pub rpc_startup_mode: RpcStartupMode,
     #[serde(default = "default_rpc_poll_seconds")]
     pub rpc_poll_seconds: NonZeroU64,
     #[serde(default = "default_rpc_timeout_ms")]
@@ -62,6 +72,10 @@ fn default_rpc_poll_seconds() -> NonZeroU64 {
     DEFAULT_RPC_POLL_SECONDS
 }
 
+fn default_rpc_startup_mode() -> RpcStartupMode {
+    DEFAULT_RPC_STARTUP_MODE
+}
+
 fn default_rpc_timeout_ms() -> NonZeroU64 {
     DEFAULT_RPC_TIMEOUT_MS
 }
@@ -88,6 +102,7 @@ mod tests {
         assert_eq!(config.html_title, DEFAULT_HTML_TITLE);
         assert_eq!(config.chain_id, None);
         assert_eq!(config.rpc_url, None);
+        assert_eq!(config.rpc_startup_mode, RpcStartupMode::Strict);
         assert_eq!(config.rpc_poll_seconds, DEFAULT_RPC_POLL_SECONDS);
         assert_eq!(config.rpc_timeout_ms, DEFAULT_RPC_TIMEOUT_MS);
         assert_eq!(config.admin_bearer_key, None);
@@ -100,6 +115,7 @@ mod tests {
             ("HTML_TITLE", "Arkiv Fork Planner"),
             ("CHAIN_ID", "42069"),
             ("RPC_URL", "http://localhost:8545"),
+            ("RPC_STARTUP_MODE", "deferred"),
             ("RPC_POLL_SECONDS", "5"),
             ("ADMIN_BEARER_KEY", "s3cret"),
         ])
@@ -108,6 +124,7 @@ mod tests {
         assert_eq!(config.html_title, "Arkiv Fork Planner");
         assert_eq!(config.chain_id, Some(42069));
         assert_eq!(config.rpc_url.as_deref(), Some("http://localhost:8545"));
+        assert_eq!(config.rpc_startup_mode, RpcStartupMode::Deferred);
         assert_eq!(config.rpc_poll_seconds.get(), 5);
         assert_eq!(config.admin_bearer_key.as_deref(), Some("s3cret"));
     }
@@ -120,5 +137,10 @@ mod tests {
     #[test]
     fn rejects_zero_poll_seconds() {
         assert!(from_pairs([("RPC_POLL_SECONDS", "0")]).is_err());
+    }
+
+    #[test]
+    fn rejects_unknown_rpc_startup_mode() {
+        assert!(from_pairs([("RPC_STARTUP_MODE", "eventually")]).is_err());
     }
 }

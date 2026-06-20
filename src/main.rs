@@ -11,8 +11,9 @@ use std::ffi::{OsStr, OsString};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
-use config::create_config;
+use config::{create_config, RpcStartupMode};
 use model::ScheduleDocument;
+use rpc::RpcStatus;
 use store::ScheduleStore;
 
 const WATCH_INTERVAL_SECONDS: u64 = 5;
@@ -78,6 +79,11 @@ fn main() {
         .expect("failed to build tokio runtime");
 
     runtime.block_on(async move {
+        let rpc_status = config
+            .rpc_url
+            .as_ref()
+            .map(|_| Arc::new(RpcStatus::default()));
+
         if let Some(rpc_url) = config.rpc_url.clone() {
             let timeout = Duration::from_millis(config.rpc_timeout_ms.get());
             let interval = Duration::from_secs(config.rpc_poll_seconds.get());
@@ -86,47 +92,63 @@ fn main() {
                 .build()
                 .expect("failed to build reqwest client");
 
-            let expected_chain_id = store.snapshot().chain_id;
-            match rpc::fetch_chain_id(&client, &rpc_url, timeout).await {
-                Ok(actual_chain_id) if actual_chain_id == expected_chain_id => {
-                    println!(
-                        "{}",
-                        serde_json::json!({
-                            "message": "startup chain id verified",
-                            "chainId": actual_chain_id,
-                            "rpcUrl": rpc_url,
-                        })
-                    );
+            let status = rpc_status
+                .as_ref()
+                .expect("rpc status exists when rpc url is configured")
+                .clone();
+
+            if config.rpc_startup_mode == RpcStartupMode::Strict {
+                let expected_chain_id = store.snapshot().chain_id;
+                match rpc::fetch_chain_id(&client, &rpc_url, timeout).await {
+                    Ok(actual_chain_id) if actual_chain_id == expected_chain_id => {
+                        status.mark_verified(actual_chain_id);
+                        println!(
+                            "{}",
+                            serde_json::json!({
+                                "message": "startup chain id verified",
+                                "chainId": actual_chain_id,
+                                "rpcUrl": rpc_url,
+                            })
+                        );
+                    }
+                    Ok(actual_chain_id) => {
+                        eprintln!(
+                            "{}",
+                            serde_json::json!({
+                                "message": "chain id mismatch at startup; refusing to start",
+                                "expected": expected_chain_id,
+                                "actual": actual_chain_id,
+                                "rpcUrl": rpc_url,
+                                "hint": "Update chainId in the schedule file to match the chain served by RPC_URL, or point RPC_URL at the correct node.",
+                            })
+                        );
+                        std::process::exit(1);
+                    }
+                    Err(message) => {
+                        eprintln!(
+                            "{}",
+                            serde_json::json!({
+                                "message": "startup chain id check failed; refusing to start",
+                                "rpcUrl": rpc_url,
+                                "error": message,
+                            })
+                        );
+                        std::process::exit(1);
+                    }
                 }
-                Ok(actual_chain_id) => {
-                    eprintln!(
-                        "{}",
-                        serde_json::json!({
-                            "message": "chain id mismatch at startup; refusing to start",
-                            "expected": expected_chain_id,
-                            "actual": actual_chain_id,
-                            "rpcUrl": rpc_url,
-                            "hint": "Update chainId in the schedule file to match the chain served by RPC_URL, or point RPC_URL at the correct node.",
-                        })
-                    );
-                    std::process::exit(1);
-                }
-                Err(message) => {
-                    eprintln!(
-                        "{}",
-                        serde_json::json!({
-                            "message": "startup chain id check failed; refusing to start",
-                            "rpcUrl": rpc_url,
-                            "error": message,
-                        })
-                    );
-                    std::process::exit(1);
-                }
+            } else {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "message": "deferring startup chain id verification",
+                        "rpcUrl": rpc_url,
+                    })
+                );
             }
 
             let poll_store = Arc::clone(&store);
             tokio::spawn(async move {
-                rpc::poll_loop(poll_store, client, rpc_url, timeout, interval).await;
+                rpc::poll_loop(poll_store, status, client, rpc_url, timeout, interval).await;
             });
         } else {
             let watch_store = Arc::clone(&store);
@@ -141,6 +163,7 @@ fn main() {
             schedule_path: Arc::new(config.schedule_path.clone()),
             html_title: Arc::new(config.html_title.clone()),
             admin_key: admin_key.map(Arc::new),
+            rpc_status,
         };
 
         server::run_server(app_state, config.listen_host.clone(), config.listen_port.get()).await;

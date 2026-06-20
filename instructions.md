@@ -1,9 +1,11 @@
 # Atlas Network Integration
 
-Run `arkiv-hardfork-planner` as a small HTTP service next to the Atlas network services. It should be able to reach a Teth node JSON-RPC endpoint, and Atlas clients should read the published schedule from:
+Run `arkiv-hardfork-planner` as a small HTTP service next to the Atlas network services. It replaces the old static `protocol-schedule` sidecar; do not run both services with the same `protocol-schedule` DNS role on the Atlas Docker network.
+
+Atlas clients should read the published schedule from:
 
 ```text
-http://<planner-host>:28882/arkiv-protocol-schedule.json
+http://protocol-schedule:8080/arkiv-protocol-schedule.json
 ```
 
 Use the Atlas chain ID in both the schedule file and the service config. The default schedule in this repository uses `chainId: 42069`.
@@ -12,39 +14,53 @@ Use the Atlas chain ID in both the schedule file and the service config. The def
 
 ```env
 LISTEN_HOST=0.0.0.0
-LISTEN_PORT=28882
+LISTEN_PORT=8080
 HTML_TITLE="Atlas Hardfork Planner"
 SCHEDULE_PATH=/data/arkiv-protocol-schedule.json
 CHAIN_ID=42069
-RPC_URL=http://teth:8545
+RPC_URL=http://reth:8545
+RPC_STARTUP_MODE=deferred
 RPC_POLL_SECONDS=10
 RPC_TIMEOUT_MS=5000
-ADMIN_BEARER_KEY=<strong random admin token>
+ADMIN_BEARER_KEY=<optional strong random admin token>
 ```
 
-`RPC_URL` must point at the Teth node used by the Atlas network. On startup the planner calls `eth_chainId`; if the RPC chain does not match the schedule chain ID, or the check cannot complete, the service exits instead of publishing an unverified schedule.
+`RPC_URL` must point at the execution node used by the Atlas network. `RPC_STARTUP_MODE` controls how strongly the service gates startup:
+
+- `strict` is the default. On startup the planner calls `eth_chainId`; if the RPC chain does not match the schedule chain ID, or the check cannot complete, the service exits instead of publishing an unverified schedule.
+- `deferred` is the Atlas compose mode. The planner starts serving the validated schedule immediately, then keeps checking RPC until it can verify the chain ID. This avoids a startup cycle where `reth` waits for `protocol-schedule` while the planner waits for `reth`.
 
 ## Docker Compose Example
+
+Use `docker-compose.atlas.yml` as the Atlas drop-in shape:
 
 ```yaml
 services:
   protocol-schedule:
     image: ghcr.io/arkiv-network/arkiv-hardfork-planner:main
     ports:
-      - "28882:28882"
+      - "${PROTOCOL_SCHEDULE_PORT:-8080}:8080"
     environment:
       LISTEN_HOST: "0.0.0.0"
-      LISTEN_PORT: "28882"
+      LISTEN_PORT: "8080"
       HTML_TITLE: "Atlas Hardfork Planner"
       SCHEDULE_PATH: /data/arkiv-protocol-schedule.json
       CHAIN_ID: "42069"
-      RPC_URL: http://teth:8545
+      RPC_URL: http://reth:8545
+      RPC_STARTUP_MODE: deferred
       RPC_POLL_SECONDS: "10"
       RPC_TIMEOUT_MS: "5000"
-      ADMIN_BEARER_KEY: ${ADMIN_BEARER_KEY}
+      ADMIN_BEARER_KEY: ${ADMIN_BEARER_KEY:-}
     volumes:
       - ./data:/data
     restart: unless-stopped
+    networks:
+      - atlas
+
+networks:
+  atlas:
+    name: atlas
+    external: true
 ```
 
 Place the active schedule at `./data/arkiv-protocol-schedule.json`. Keep this file backed up; admin changes are persisted there before they are published in memory.
@@ -54,4 +70,4 @@ Place the active schedule at `./data/arkiv-protocol-schedule.json`. Keep this fi
 - Leave `ADMIN_BEARER_KEY` unset to run in read-only mode.
 - Set `ADMIN_BEARER_KEY` only for trusted operators, and access the UI over a trusted network or TLS-terminated proxy.
 - Configure Atlas nodes or tooling to consume `/arkiv-protocol-schedule.json`.
-- Use `/healthz` for a lightweight liveness check and `/status` for current version, chain ID, current block, and retained release history.
+- Use `/healthz` for a lightweight liveness check and `/status` for current version, chain ID, current block, retained release history, and RPC verification fields (`rpcVerified`, `rpcChainId`, `rpcError`) when RPC polling is configured.

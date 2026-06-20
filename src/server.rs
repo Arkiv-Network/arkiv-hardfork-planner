@@ -1,17 +1,18 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use axum::Json;
-use axum::Router;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
-use serde_json::{Value, json};
+use axum::Json;
+use axum::Router;
+use serde_json::{json, Value};
 use tokio::net::TcpListener;
 
 use crate::frontend::INDEX_HTML;
 use crate::model::ScheduleEntry;
+use crate::rpc::RpcStatus;
 use crate::store::{AddForkFailure, RemoveForkFailure, ScheduleStore, Snapshot};
 
 #[derive(Clone, Debug)]
@@ -20,6 +21,7 @@ pub struct AppState {
     pub schedule_path: Arc<String>,
     pub html_title: Arc<String>,
     pub admin_key: Option<Arc<String>>,
+    pub rpc_status: Option<Arc<RpcStatus>>,
 }
 
 pub async fn run_server(state: AppState, listen_host: String, listen_port: u16) {
@@ -116,6 +118,13 @@ async fn health_handler(State(state): State<AppState>) -> Json<Value> {
         body["currentBlock"] = json!(current_block);
     }
 
+    if let Some(rpc_status) = state.rpc_status.as_ref() {
+        let rpc = rpc_status.snapshot();
+        body["rpcVerified"] = json!(rpc.verified);
+        body["rpcChainId"] = json!(rpc.chain_id);
+        body["rpcError"] = json!(rpc.error);
+    }
+
     Json(body)
 }
 
@@ -138,7 +147,7 @@ async fn status_handler(State(state): State<AppState>) -> Json<Value> {
         })
         .collect();
 
-    Json(json!({
+    let mut body = json!({
         "ok": true,
         "service": "arkiv-protocol-schedule",
         "chainId": snapshot.chain_id,
@@ -150,7 +159,16 @@ async fn status_handler(State(state): State<AppState>) -> Json<Value> {
         "admin": state.admin_key.is_some(),
         "releases": releases,
         "endpoints": ["/", "/status", "/arkiv-protocol-schedule.json", "/healthz", "/admin/forks"],
-    }))
+    });
+
+    if let Some(rpc_status) = state.rpc_status.as_ref() {
+        let rpc = rpc_status.snapshot();
+        body["rpcVerified"] = json!(rpc.verified);
+        body["rpcChainId"] = json!(rpc.chain_id);
+        body["rpcError"] = json!(rpc.error);
+    }
+
+    Json(body)
 }
 
 async fn admin_add_fork(
@@ -359,6 +377,7 @@ mod tests {
             schedule_path: Arc::new("/tmp/unused-arkiv-schedule.json".to_string()),
             html_title: Arc::new("Arkiv Hardfork Planner".to_string()),
             admin_key: key.map(|k| Arc::new(k.to_string())),
+            rpc_status: None,
         }
     }
 
@@ -431,6 +450,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn status_handler_reports_rpc_state_when_configured() {
+        let mut state = state_with_key(None);
+        let rpc_status = Arc::new(RpcStatus::default());
+        rpc_status.mark_error("chain id check failed: connection refused");
+        state.rpc_status = Some(rpc_status);
+
+        let Json(body) = status_handler(State(state)).await;
+
+        assert_eq!(body["rpcVerified"], json!(false));
+        assert_eq!(
+            body["rpcError"],
+            json!("chain id check failed: connection refused")
+        );
+    }
+
+    #[tokio::test]
     async fn admin_is_disabled_without_key() {
         let state = state_with_key(None);
         let mut headers = HeaderMap::new();
@@ -460,6 +495,7 @@ mod tests {
             schedule_path: Arc::new(temp.to_string_lossy().to_string()),
             html_title: Arc::new("Arkiv Hardfork Planner".to_string()),
             admin_key: Some(Arc::new("real-key".to_string())),
+            rpc_status: None,
         };
         let mut headers = HeaderMap::new();
         headers.insert("authorization", "Bearer real-key".parse().unwrap());
