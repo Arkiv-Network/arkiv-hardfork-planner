@@ -5,7 +5,7 @@ Run `arkiv-hardfork-planner` as a small HTTP service next to the Atlas network s
 Atlas clients should read the published schedule from:
 
 ```text
-http://protocol-schedule:8080/arkiv-protocol-schedule.json
+http://protocol-schedule:28882/arkiv-protocol-schedule.json
 ```
 
 Use the Atlas chain ID in both the schedule file and the service config. The default schedule in this repository uses `chainId: 42069`.
@@ -14,7 +14,7 @@ Use the Atlas chain ID in both the schedule file and the service config. The def
 
 ```env
 LISTEN_HOST=0.0.0.0
-LISTEN_PORT=8080
+LISTEN_PORT=28882
 HTML_TITLE="Atlas Hardfork Planner"
 SCHEDULE_PATH=/data/arkiv-protocol-schedule.json
 CHAIN_ID=42069
@@ -30,6 +30,12 @@ ADMIN_BEARER_KEY=<optional strong random admin token>
 - `strict` is the default. On startup the planner calls `eth_chainId`; if the RPC chain does not match the schedule chain ID, or the check cannot complete, the service exits instead of publishing an unverified schedule.
 - `deferred` is the Atlas compose mode. The planner starts serving the validated schedule immediately, then keeps checking RPC until it can verify the chain ID. This avoids a startup cycle where `reth` waits for `protocol-schedule` while the planner waits for `reth`.
 
+Set reth's `.env` schedule URL to the planner-native port:
+
+```env
+ARKIV_PROTOCOL_SCHEDULE_URL=http://protocol-schedule:28882/arkiv-protocol-schedule.json
+```
+
 ## Docker Compose Example
 
 Use `docker-compose.atlas.yml` as the Atlas drop-in shape:
@@ -39,10 +45,10 @@ services:
   protocol-schedule:
     image: ghcr.io/arkiv-network/arkiv-hardfork-planner:main
     ports:
-      - "${PROTOCOL_SCHEDULE_PORT:-8080}:8080"
+      - "${PROTOCOL_SCHEDULE_PORT:-28882}:28882"
     environment:
       LISTEN_HOST: "0.0.0.0"
-      LISTEN_PORT: "8080"
+      LISTEN_PORT: "28882"
       HTML_TITLE: "Atlas Hardfork Planner"
       SCHEDULE_PATH: /data/arkiv-protocol-schedule.json
       CHAIN_ID: "42069"

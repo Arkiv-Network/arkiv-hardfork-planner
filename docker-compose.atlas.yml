@@ -4,10 +4,10 @@ services:
     image: arkiv-hardfork-planner
     container_name: arkiv-pos-protocol-schedule
     ports:
-      - "${PROTOCOL_SCHEDULE_PORT:-8080}:8080"
+      - "${PROTOCOL_SCHEDULE_PORT:-28882}:28882"
     environment:
       LISTEN_HOST: "0.0.0.0"
-      LISTEN_PORT: "8080"
+      LISTEN_PORT: "28882"
       HTML_TITLE: ${HTML_TITLE:-Atlas Hardfork Planner}
       SCHEDULE_PATH: /data/arkiv-protocol-schedule.json
       CHAIN_ID: "42069"
