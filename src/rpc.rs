@@ -32,7 +32,10 @@ pub async fn poll_loop(
                 }
             }
             Err(message) => {
-                eprintln!("{}", json!({ "message": "rpc poll failed", "error": message }));
+                eprintln!(
+                    "{}",
+                    json!({ "message": "rpc poll failed", "error": message })
+                );
             }
         }
         sleep(interval).await;
@@ -44,10 +47,27 @@ pub async fn fetch_block_number(
     rpc_url: &str,
     timeout: Duration,
 ) -> Result<u64, String> {
+    rpc_quantity(client, rpc_url, timeout, "eth_blockNumber").await
+}
+
+pub async fn fetch_chain_id(
+    client: &reqwest::Client,
+    rpc_url: &str,
+    timeout: Duration,
+) -> Result<u64, String> {
+    rpc_quantity(client, rpc_url, timeout, "eth_chainId").await
+}
+
+async fn rpc_quantity(
+    client: &reqwest::Client,
+    rpc_url: &str,
+    timeout: Duration,
+    method: &str,
+) -> Result<u64, String> {
     let request_body = json!({
         "jsonrpc": "2.0",
         "id": 1,
-        "method": "eth_blockNumber",
+        "method": method,
         "params": [],
     });
 
@@ -75,8 +95,7 @@ pub async fn fetch_block_number(
         .and_then(Value::as_str)
         .ok_or_else(|| "rpc response missing string result".to_string())?;
 
-    parse_quantity(result)
-        .ok_or_else(|| format!("rpc returned non-quantity block number: {result}"))
+    parse_quantity(result).ok_or_else(|| format!("rpc returned non-quantity result: {result}"))
 }
 
 #[cfg(test)]

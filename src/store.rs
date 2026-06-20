@@ -1,7 +1,9 @@
 use std::collections::VecDeque;
 use std::sync::Mutex;
 
-use crate::model::{ScheduleDocument, ScheduleEntry, canonicalize, now_iso_second, select_active_entries};
+use crate::model::{
+    ScheduleDocument, ScheduleEntry, canonicalize, now_iso_second, select_active_entries,
+};
 use crate::validation::{self, ValidationFailure};
 
 const HISTORY_LIMIT: usize = 64;
@@ -28,9 +30,16 @@ pub struct Snapshot {
 }
 
 #[derive(Debug)]
+pub enum AddForkFailure {
+    Validation(ValidationFailure),
+    Persistence(String),
+}
+
+#[derive(Debug)]
 pub enum RemoveForkFailure {
     NotFound,
     Validation(ValidationFailure),
+    Persistence(String),
 }
 
 #[derive(Debug)]
@@ -109,7 +118,9 @@ impl ScheduleStore {
     pub fn set_current_block(&self, block: u64) -> bool {
         let mut inner = self.inner.lock().expect("schedule store lock poisoned");
 
-        if inner.current.current_block == Some(block) {
+        if let Some(current) = inner.current.current_block
+            && block <= current
+        {
             return false;
         }
 
@@ -118,25 +129,61 @@ impl ScheduleStore {
         true
     }
 
+    #[cfg(test)]
     pub fn add_fork(&self, entry: ScheduleEntry) -> Result<Snapshot, ValidationFailure> {
+        self.add_fork_persisted(entry, |_| Ok(()))
+            .map_err(|failure| match failure {
+                AddForkFailure::Validation(error) => error,
+                AddForkFailure::Persistence(_) => {
+                    unreachable!("infallible persistence closure failed")
+                }
+            })
+    }
+
+    pub fn add_fork_persisted<F>(
+        &self,
+        entry: ScheduleEntry,
+        persist: F,
+    ) -> Result<Snapshot, AddForkFailure>
+    where
+        F: FnOnce(&str) -> Result<(), String>,
+    {
         let mut inner = self.inner.lock().expect("schedule store lock poisoned");
 
         let mut new_doc = inner.current.clone();
         new_doc.schedule.push(entry);
         new_doc.schedule.sort_by_key(|item| item.activation_block);
 
-        validation::validate_document(&new_doc, self.expected_chain_id)?;
-        inner.current = new_doc;
-        apply_bumped_locked(&mut inner);
-        Ok(snapshot_from(&inner))
+        validation::validate_document(&new_doc, self.expected_chain_id)
+            .map_err(AddForkFailure::Validation)?;
+
+        let change = staged_bumped_change(&inner, new_doc);
+        persist(&change.canonical).map_err(AddForkFailure::Persistence)?;
+        let snapshot = change.snapshot.clone();
+        apply_staged_change(&mut inner, change);
+        Ok(snapshot)
     }
 
+    #[cfg(test)]
     pub fn remove_fork(&self, activation_block: u64) -> Result<Snapshot, RemoveForkFailure> {
+        self.remove_fork_persisted(activation_block, |_| Ok(()))
+    }
+
+    pub fn remove_fork_persisted<F>(
+        &self,
+        activation_block: u64,
+        persist: F,
+    ) -> Result<Snapshot, RemoveForkFailure>
+    where
+        F: FnOnce(&str) -> Result<(), String>,
+    {
         let mut inner = self.inner.lock().expect("schedule store lock poisoned");
 
         let mut new_doc = inner.current.clone();
         let before = new_doc.schedule.len();
-        new_doc.schedule.retain(|item| item.activation_block != activation_block);
+        new_doc
+            .schedule
+            .retain(|item| item.activation_block != activation_block);
 
         if new_doc.schedule.len() == before {
             return Err(RemoveForkFailure::NotFound);
@@ -145,9 +192,11 @@ impl ScheduleStore {
         validation::validate_document(&new_doc, self.expected_chain_id)
             .map_err(RemoveForkFailure::Validation)?;
 
-        inner.current = new_doc;
-        apply_bumped_locked(&mut inner);
-        Ok(snapshot_from(&inner))
+        let change = staged_bumped_change(&inner, new_doc);
+        persist(&change.canonical).map_err(RemoveForkFailure::Persistence)?;
+        let snapshot = change.snapshot.clone();
+        apply_staged_change(&mut inner, change);
+        Ok(snapshot)
     }
 
     pub fn snapshot(&self) -> Snapshot {
@@ -159,6 +208,44 @@ impl ScheduleStore {
         let inner = self.inner.lock().expect("schedule store lock poisoned");
         inner.history.iter().cloned().collect()
     }
+}
+
+#[derive(Debug)]
+struct StagedChange {
+    document: ScheduleDocument,
+    canonical: String,
+    hash: String,
+    record: ReleaseRecord,
+    snapshot: Snapshot,
+}
+
+fn staged_bumped_change(inner: &Inner, mut document: ScheduleDocument) -> StagedChange {
+    let next_version = inner
+        .last_version
+        .checked_add(1)
+        .expect("schedule version does not overflow");
+    document.version = next_version;
+    let canonical = canonicalize(&document);
+    let hash = stable_hash(canonical.as_bytes());
+    let record = record_for(&document, &hash);
+    let retained_versions = (inner.history.len() + 1).min(HISTORY_LIMIT);
+    let snapshot = snapshot_for(&document, &canonical, &hash, retained_versions);
+
+    StagedChange {
+        document,
+        canonical,
+        hash,
+        record,
+        snapshot,
+    }
+}
+
+fn apply_staged_change(inner: &mut Inner, change: StagedChange) {
+    inner.last_version = change.document.version;
+    inner.current = change.document;
+    inner.canonical = change.canonical;
+    inner.hash = change.hash;
+    push_history(&mut inner.history, change.record);
 }
 
 fn apply_bumped_locked(inner: &mut Inner) {
@@ -175,14 +262,28 @@ fn apply_bumped_locked(inner: &mut Inner) {
 }
 
 fn snapshot_from(inner: &Inner) -> Snapshot {
+    snapshot_for(
+        &inner.current,
+        &inner.canonical,
+        &inner.hash,
+        inner.history.len(),
+    )
+}
+
+fn snapshot_for(
+    document: &ScheduleDocument,
+    canonical: &str,
+    hash: &str,
+    retained_versions: usize,
+) -> Snapshot {
     Snapshot {
-        canonical: inner.canonical.clone(),
-        hash: inner.hash.clone(),
-        version: inner.current.version,
-        chain_id: inner.current.chain_id,
-        current_block: inner.current.current_block,
-        active_entries: select_active_entries(&inner.current).len(),
-        retained_versions: inner.history.len(),
+        canonical: canonical.to_string(),
+        hash: hash.to_string(),
+        version: document.version,
+        chain_id: document.chain_id,
+        current_block: document.current_block,
+        active_entries: select_active_entries(document).len(),
+        retained_versions,
     }
 }
 
@@ -296,6 +397,17 @@ mod tests {
     }
 
     #[test]
+    fn set_current_block_ignores_regressions() {
+        let store = ScheduleStore::new(document(1, None), None).unwrap();
+        assert!(store.set_current_block(100));
+        assert!(!store.set_current_block(99));
+
+        let snap = store.snapshot();
+        assert_eq!(snap.version, 2);
+        assert_eq!(snap.current_block, Some(100));
+    }
+
+    #[test]
     fn history_caps_at_limit() {
         let store = ScheduleStore::new(document(1, None), None).unwrap();
         for block in 1..=(HISTORY_LIMIT as u64 + 10) {
@@ -331,10 +443,12 @@ mod tests {
 
         assert_eq!(snapshot.version, 2);
         assert_eq!(snapshot.active_entries, 2);
-        assert!(store
-            .snapshot()
-            .canonical
-            .contains("\"activationBlock\": 1000"));
+        assert!(
+            store
+                .snapshot()
+                .canonical
+                .contains("\"activationBlock\": 1000")
+        );
     }
 
     #[test]
@@ -363,6 +477,17 @@ mod tests {
     }
 
     #[test]
+    fn add_fork_does_not_commit_when_persistence_fails() {
+        let store = ScheduleStore::new(document(1, None), None).unwrap();
+        let result = store.add_fork_persisted(entry(1_000), |_| Err("disk full".to_string()));
+
+        assert!(matches!(result, Err(AddForkFailure::Persistence(_))));
+        let snapshot = store.snapshot();
+        assert_eq!(snapshot.version, 1);
+        assert!(!snapshot.canonical.contains("\"activationBlock\": 1000"));
+    }
+
+    #[test]
     fn remove_fork_removes_and_bumps_version() {
         let mut doc = document(1, None);
         doc.schedule = vec![entry(0), entry(1_000)];
@@ -371,7 +496,12 @@ mod tests {
         let snapshot = store.remove_fork(1_000).unwrap();
         assert_eq!(snapshot.version, 2);
         assert_eq!(snapshot.active_entries, 1);
-        assert!(!store.snapshot().canonical.contains("\"activationBlock\": 1000"));
+        assert!(
+            !store
+                .snapshot()
+                .canonical
+                .contains("\"activationBlock\": 1000")
+        );
     }
 
     #[test]
@@ -389,5 +519,19 @@ mod tests {
         let result = store.remove_fork(0);
         assert!(matches!(result, Err(RemoveForkFailure::Validation(_))));
         assert_eq!(store.snapshot().version, 1);
+    }
+
+    #[test]
+    fn remove_fork_does_not_commit_when_persistence_fails() {
+        let mut doc = document(1, None);
+        doc.schedule = vec![entry(0), entry(1_000)];
+        let store = ScheduleStore::new(doc, None).unwrap();
+
+        let result = store.remove_fork_persisted(1_000, |_| Err("read only".to_string()));
+
+        assert!(matches!(result, Err(RemoveForkFailure::Persistence(_))));
+        let snapshot = store.snapshot();
+        assert_eq!(snapshot.version, 1);
+        assert!(snapshot.canonical.contains("\"activationBlock\": 1000"));
     }
 }

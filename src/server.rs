@@ -12,7 +12,7 @@ use tokio::net::TcpListener;
 
 use crate::frontend::INDEX_HTML;
 use crate::model::ScheduleEntry;
-use crate::store::{RemoveForkFailure, ScheduleStore, Snapshot};
+use crate::store::{AddForkFailure, RemoveForkFailure, ScheduleStore, Snapshot};
 
 #[derive(Clone, Debug)]
 pub struct AppState {
@@ -92,7 +92,10 @@ async fn schedule_handler(State(state): State<AppState>) -> Response {
 
     (
         StatusCode::OK,
-        [("content-type", "application/json"), ("cache-control", "no-cache")],
+        [
+            ("content-type", "application/json"),
+            ("cache-control", "no-cache"),
+        ],
         snapshot.canonical,
     )
         .into_response()
@@ -156,9 +159,17 @@ async fn admin_add_fork(
         return *response;
     }
 
-    match state.store.add_fork(entry) {
+    match state
+        .store
+        .add_fork_persisted(entry, |canonical| persist_schedule(&state, canonical))
+    {
         Ok(snapshot) => publish(&state, snapshot, "fork added"),
-        Err(failure) => error_response(StatusCode::BAD_REQUEST, failure.to_string()),
+        Err(AddForkFailure::Validation(failure)) => {
+            error_response(StatusCode::BAD_REQUEST, failure.to_string())
+        }
+        Err(AddForkFailure::Persistence(message)) => {
+            error_response(StatusCode::INTERNAL_SERVER_ERROR, message)
+        }
     }
 }
 
@@ -171,7 +182,11 @@ async fn admin_remove_fork(
         return *response;
     }
 
-    match state.store.remove_fork(activation_block) {
+    match state
+        .store
+        .remove_fork_persisted(activation_block, |canonical| {
+            persist_schedule(&state, canonical)
+        }) {
         Ok(snapshot) => publish(&state, snapshot, "fork removed"),
         Err(RemoveForkFailure::NotFound) => error_response(
             StatusCode::NOT_FOUND,
@@ -179,6 +194,9 @@ async fn admin_remove_fork(
         ),
         Err(RemoveForkFailure::Validation(failure)) => {
             error_response(StatusCode::BAD_REQUEST, failure.to_string())
+        }
+        Err(RemoveForkFailure::Persistence(message)) => {
+            error_response(StatusCode::INTERNAL_SERVER_ERROR, message)
         }
     }
 }
@@ -233,12 +251,11 @@ fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
     diff == 0
 }
 
-fn publish(state: &AppState, snapshot: Snapshot, action: &str) -> Response {
+fn persist_schedule(state: &AppState, canonical: &str) -> Result<(), String> {
     let path = state.schedule_path.as_str();
-    let version = snapshot.version;
-    let hash = snapshot.hash.clone();
 
-    if let Err(error) = std::fs::write(path, &snapshot.canonical) {
+    std::fs::write(path, canonical).map_err(|error| {
+        let message = format!("failed to persist schedule to {path}: {error}");
         eprintln!(
             "{}",
             json!({
@@ -247,7 +264,14 @@ fn publish(state: &AppState, snapshot: Snapshot, action: &str) -> Response {
                 "error": error.to_string(),
             })
         );
-    }
+        message
+    })
+}
+
+fn publish(state: &AppState, snapshot: Snapshot, action: &str) -> Response {
+    let path = state.schedule_path.as_str();
+    let version = snapshot.version;
+    let hash = snapshot.hash.clone();
 
     println!(
         "{}",
@@ -262,7 +286,10 @@ fn publish(state: &AppState, snapshot: Snapshot, action: &str) -> Response {
 
     (
         StatusCode::OK,
-        [("content-type", "application/json"), ("cache-control", "no-cache")],
+        [
+            ("content-type", "application/json"),
+            ("cache-control", "no-cache"),
+        ],
         snapshot.canonical,
     )
         .into_response()
@@ -341,7 +368,10 @@ mod tests {
     async fn index_handler_serves_html() {
         let (status, headers, body) = body_string(index_handler().await).await;
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(headers.get("content-type").unwrap(), "text/html; charset=utf-8");
+        assert_eq!(
+            headers.get("content-type").unwrap(),
+            "text/html; charset=utf-8"
+        );
         assert!(body.contains("Arkiv Hardfork Planner"));
     }
 

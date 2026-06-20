@@ -35,7 +35,10 @@ fn main() {
     let config = create_config();
 
     let raw_schedule = std::fs::read_to_string(&config.schedule_path).unwrap_or_else(|error| {
-        panic!("failed to read schedule file {}: {error}", config.schedule_path)
+        panic!(
+            "failed to read schedule file {}: {error}",
+            config.schedule_path
+        )
     });
     let document: ScheduleDocument = serde_json::from_str(&raw_schedule)
         .unwrap_or_else(|error| panic!("failed to parse schedule JSON: {error}"));
@@ -82,6 +85,44 @@ fn main() {
                 .timeout(timeout)
                 .build()
                 .expect("failed to build reqwest client");
+
+            let expected_chain_id = store.snapshot().chain_id;
+            match rpc::fetch_chain_id(&client, &rpc_url, timeout).await {
+                Ok(actual_chain_id) if actual_chain_id == expected_chain_id => {
+                    println!(
+                        "{}",
+                        serde_json::json!({
+                            "message": "startup chain id verified",
+                            "chainId": actual_chain_id,
+                            "rpcUrl": rpc_url,
+                        })
+                    );
+                }
+                Ok(actual_chain_id) => {
+                    eprintln!(
+                        "{}",
+                        serde_json::json!({
+                            "message": "chain id mismatch at startup; refusing to start",
+                            "expected": expected_chain_id,
+                            "actual": actual_chain_id,
+                            "rpcUrl": rpc_url,
+                            "hint": "Update chainId in the schedule file to match the chain served by RPC_URL, or point RPC_URL at the correct node.",
+                        })
+                    );
+                    std::process::exit(1);
+                }
+                Err(message) => {
+                    eprintln!(
+                        "{}",
+                        serde_json::json!({
+                            "message": "startup chain id check failed; refusing to start",
+                            "rpcUrl": rpc_url,
+                            "error": message,
+                        })
+                    );
+                    std::process::exit(1);
+                }
+            }
 
             let poll_store = Arc::clone(&store);
             tokio::spawn(async move {
@@ -161,7 +202,9 @@ async fn watch_schedule_file(store: Arc<ScheduleStore>, path: String) {
 }
 
 fn current_mtime(path: &str) -> Option<SystemTime> {
-    std::fs::metadata(path).and_then(|metadata| metadata.modified()).ok()
+    std::fs::metadata(path)
+        .and_then(|metadata| metadata.modified())
+        .ok()
 }
 
 fn reload_schedule(path: &str) -> Result<ScheduleDocument, String> {
