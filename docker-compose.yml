@@ -11,7 +11,7 @@ services:
       HTML_TITLE: ${HTML_TITLE:-Atlas Hardfork Planner}
       SCHEDULE_PATH: /data/arkiv-protocol-schedule.json
       CHAIN_ID: "42069"
-      RPC_URL: http://reth:8545
+      RPC_URL: ${RPC_URL:-http://reth:8545}
       RPC_STARTUP_MODE: deferred
       RPC_POLL_SECONDS: "10"
       RPC_TIMEOUT_MS: "5000"
